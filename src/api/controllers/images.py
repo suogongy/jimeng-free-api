@@ -243,7 +243,7 @@ def receive_credit(refresh_token):
         logger.error(f"领取信用额度时发生异常: {str(e)}")
         raise
 
-def generate_images(prompt: str, refresh_token: str = None) -> dict:
+def generate_images(prompt: str, refresh_token: str = None, sample_strength: float = 0.5, width: int = 1664, height: int = 936, seed: int = int(DEFAULT_WEB_ID)) -> dict:
     try:
         logger.info(f"开始生成图片 - 模型: {DEFAULT_MODEL}, 提示词: {prompt}, 尺寸: 1024x1024, 精细度: 0.5")
         
@@ -322,14 +322,14 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
                                 "model": DEFAULT_MODEL,
                                 "prompt": prompt,
                                 "negative_prompt": "",
-                                "seed": int(DEFAULT_WEB_ID),
-                                "sample_strength": 0.5,
+                                "seed": seed,
+                                "sample_strength": sample_strength,
                                 "image_ratio": 1,
                                 "large_image_info": {
                                     "type": "",
                                     "id": large_image_info_id,
-                                    "height": 1328,
-                                    "width": 1328,
+                                    "height": height,
+                                    "width": width,
                                     "resolution_type": "1k"
                                 }
                             },
@@ -461,6 +461,9 @@ def get_history_by_ids(refresh_token: str, history_record_ids: List[str], max_re
             }
         }
         
+        # 完全对应images.ts逻辑的状态变量
+        status = 20  # 初始状态: 20（生成中）
+        
         for attempt in range(max_retries):
             try:
                 response = requests.post(
@@ -483,35 +486,34 @@ def get_history_by_ids(refresh_token: str, history_record_ids: List[str], max_re
                 if result.get("ret") != "0":
                     raise Exception(f"获取图片结果失败: {result.get('errmsg')}")
                 
-                # 根据images.ts的处理逻辑，返回结果格式不同
+                # 严格按照images.ts中的处理逻辑获取结果
                 history_id = history_record_ids[0]
-                if not result.get(history_id):
+                if not result.get("data", {}).get(history_id):
                     raise Exception("记录不存在")
                     
-                status = result[history_id].get("status")
-                fail_code = result[history_id].get("fail_code")
-                item_list = result[history_id].get("item_list", [])
+                history_data = result["data"][history_id]
+                status = history_data.get("status")
+                fail_code = history_data.get("fail_code")
+                item_list = history_data.get("item_list", [])
                 
-                # 检查图片是否生成完成
-                if status == 30:  # 30表示生成完成
-                    # 将结果格式化为与Python代码兼容的格式
-                    return {
-                        "ret": "0",
-                        "data": {
-                            "aigc_data": {
-                                "status": status,
-                                "fail_code": fail_code,
-                                "item_list": item_list
-                            }
-                        }
-                    }
-                    
-                # 如果未完成，等待后重试
-                if attempt < max_retries - 1:
-                    logger.info(f"图片生成中，等待{retry_interval}秒后重试...")
-                    time.sleep(retry_interval)
+                logger.debug(f"图片生成状态: {status}, 失败代码: {fail_code}, 项目列表: {item_list}")
+                
+                # 与images.ts保持完全一致的状态检查
+                if status == 50:  # 完成
+                    return result
+                elif status == 30:  # 失败
+                    if fail_code == '2038':
+                        raise Exception("内容被过滤")
+                    else:
+                        raise Exception("图片生成失败")
+                elif status == 20:  # 生成中
+                    if attempt < max_retries - 1:
+                        logger.info(f"图片生成中，等待{retry_interval}秒后重试...")
+                        time.sleep(retry_interval)
+                    else:
+                        raise Exception("图片生成超时")
                 else:
-                    raise Exception("图片生成超时")
+                    raise Exception(f"未知的图片生成状态: {status}")
                     
             except Exception as e:
                 if attempt == max_retries - 1:
@@ -523,7 +525,7 @@ def get_history_by_ids(refresh_token: str, history_record_ids: List[str], max_re
         logger.error(f"获取图片结果时发生异常: {str(e)}")
         raise
 
-def generate_images_with_result(prompt: str, refresh_token: str = None) -> dict:
+def generate_images_with_result(prompt: str, width: int = 1664, height: int = 936, refresh_token: str = None, seed: int = int(DEFAULT_WEB_ID), sample_strength: float = 0.5) -> dict:
     """
     生成图片并等待获取结果
     
@@ -536,7 +538,7 @@ def generate_images_with_result(prompt: str, refresh_token: str = None) -> dict:
     """
     try:
         # 首先调用生成图片接口
-        generate_result = generate_images(prompt, refresh_token)
+        generate_result = generate_images(prompt, refresh_token, sample_strength, width, height, seed)
         if generate_result.get("status") != "success":
             return generate_result
             
@@ -545,12 +547,38 @@ def generate_images_with_result(prompt: str, refresh_token: str = None) -> dict:
         if not history_record_id:
             return {"status": "error", "message": "未获取到history_record_id"}
             
-        # 直接调用get_history_by_ids方法
+        # 直接调用get_history_by_ids方法获取结果
         result = get_history_by_ids(refresh_token, [history_record_id])
         
+        # 提取图片URL列表，参考images.ts中的处理逻辑
+        image_urls = []
+        if result.get("data", {}).get(history_record_id):
+            item_list = result["data"][history_record_id].get("item_list", [])
+            for item in item_list:
+                image_url = None
+                # 判断是否存在large_images及其image_url
+                if (item.get("image") and 
+                    item["image"].get("large_images") and 
+                    len(item["image"]["large_images"]) > 0 and 
+                    item["image"]["large_images"][0].get("image_url")):
+                    image_url = item["image"]["large_images"][0]["image_url"]
+                else:
+                    # 如果没有large_images，则尝试使用cover_url
+                    if item.get("common_attr") and item["common_attr"].get("cover_url"):
+                        image_url = item["common_attr"]["cover_url"]
+                
+                # 只添加非空URL
+                if image_url:
+                    image_urls.append(image_url)
+            
+            logger.info(f"成功获取到{len(image_urls)}个图片URL")
+        else:
+            logger.warning(f"响应中未找到history_id: {history_record_id}")
+            
         return {
             "status": "success",
-            "data": result.get("data", {})
+            "image_urls": image_urls,
+            "raw_response": result  # 保留原始响应，以便调试
         }
         
     except Exception as e:
@@ -559,40 +587,55 @@ def generate_images_with_result(prompt: str, refresh_token: str = None) -> dict:
 
 def main(
     prompt: str,
-    model: str = DEFAULT_MODEL,
-    width: int = 1024,
-    height: int = 1024,
+    width: int = 1664,
+    height: int = 936,
     sample_strength: float = 0.5,
-    negative_prompt: str = "",
     refresh_token: str = "",
-    base_url: str = "https://jimeng.jianying.com"
+    seed: int = int(DEFAULT_WEB_ID)
 ) -> Dict[str, Union[List[str], str]]:
     """
     主函数，用于调用图像生成功能
     
     Args:
         prompt: 提示词
-        model: 模型名称
         width: 图像宽度
         height: 图像高度
         sample_strength: 采样强度
-        negative_prompt: 负面提示词
         refresh_token: 刷新令牌
-        base_url: API基础URL
+        seed: 种子
     
     Returns:
         Dict[str, Union[List[str], str]]: 包含生成图像URL列表和状态信息的字典
     """
     try:
-        image_urls = generate_images_with_result(
+        # 直接使用生成图片并获取结果的函数
+        result = generate_images_with_result(
             prompt=prompt,
             refresh_token=refresh_token,
+            width=width,
+            height=height,
+            seed=seed,
+            sample_strength=sample_strength
         )
+        
+        if result.get("status") != "success":
+            return result
+        
+        image_urls = result.get("image_urls", [])
+        
+        if not image_urls:
+            logger.warning("未能获取有效的图片URL")
+            return {
+                "status": "error",
+                "message": "未能获取有效的图片URL"
+            }
+            
         return {
             "status": "success",
             "image_urls": image_urls
         }
     except Exception as e:
+        logger.error(f"生成图片时发生异常: {str(e)}")
         return {
             "status": "error",
             "message": str(e)
