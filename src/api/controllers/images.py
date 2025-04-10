@@ -120,7 +120,21 @@ def get_credit(refresh_token):
     headers, params = get_common_params(refresh_token, uri)
     
     try:
-        response = requests.post(
+        # 创建会话并配置重试策略
+        session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=0.1,
+            status_forcelist=[500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        
+        # 移除Accept-Encoding头，避免服务器返回压缩响应
+        headers.pop('Accept-Encoding', None)
+        
+        response = session.post(
             f"https://jimeng.jianying.com{uri}",
             headers=headers,
             params=params,
@@ -131,14 +145,35 @@ def get_credit(refresh_token):
         logger.debug(f"信用额度请求URL: {response.url}")
         logger.debug(f"信用额度请求头: {json.dumps(dict(response.request.headers), ensure_ascii=False)}")
         logger.debug(f"信用额度响应状态码: {response.status_code}")
-        logger.debug(f"信用额度响应内容: {response.text}")
+        
+        # 检查响应编码
+        if response.encoding is None:
+            response.encoding = 'utf-8'
+            
+        # 记录原始响应内容
+        raw_content = response.content
+        logger.debug(f"原始响应内容: {raw_content}")
         
         if response.status_code != 200:
             logger.error(f"获取信用额度失败: {response.text}")
             raise Exception(f"获取信用额度失败: {response.text}")
         
         # 处理响应数据
-        data = response.json()
+        try:
+            # 尝试直接解析JSON
+            data = response.json()
+        except json.JSONDecodeError:
+            # 如果JSON解析失败，尝试解码响应内容
+            try:
+                # 尝试使用不同的编码方式解码
+                decoded_content = raw_content.decode('utf-8')
+                logger.debug(f"解码后的响应内容: {decoded_content}")
+                data = json.loads(decoded_content)
+            except Exception as e:
+                logger.error(f"响应内容解码失败: {str(e)}")
+                logger.error(f"原始响应内容: {raw_content}")
+                raise Exception(f"响应内容解码失败: {str(e)}")
+            
         if not isinstance(data, dict):
             logger.error(f"获取信用额度失败: 响应格式错误")
             raise Exception("获取信用额度失败: 响应格式错误")
