@@ -257,7 +257,20 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
             return {"status": "error", "message": "信用额度不足"}
             
         # 生成图片
-        headers, params = get_common_params(refresh_token, "/mweb/v1/aigc_draft/generate")
+        uri = "/mweb/v1/aigc_draft/generate"
+        headers, params = get_common_params(refresh_token, uri)
+        
+        # 移除Accept-Encoding头，避免服务器返回压缩响应
+        headers.pop('Accept-Encoding', None)
+        
+        # 添加babi_param参数
+        babi_param = {
+            "scenario": "image_video_generation",
+            "feature_key": "aigc_to_image",
+            "feature_entrance": "to_image",
+            "feature_entrance_detail": f"to_image-{DEFAULT_MODEL}"
+        }
+        params["babi_param"] = json.dumps(babi_param)
         
         # 生成请求数据
         submit_id = str(uuid.uuid4())
@@ -277,7 +290,7 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
             "submit_id": submit_id,
             "metrics_extra": json.dumps({
                 "templateId": "",
-                "generateCount": 1,
+                "generateCount": 2,
                 "promptSource": "custom",
                 "templateSource": "",
                 "lastRequestId": "",
@@ -287,8 +300,9 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
                 "type": "draft",
                 "id": draft_id,
                 "min_version": "3.0.2",
+                "min_features": [],
                 "is_from_tsn": True,
-                "version": "3.0.2",
+                "version": "3.1.5",
                 "main_component_id": component_id,
                 "component_list": [{
                     "type": "image_base_component",
@@ -314,8 +328,9 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
                                 "large_image_info": {
                                     "type": "",
                                     "id": large_image_info_id,
-                                    "height": 1024,
-                                    "width": 1024
+                                    "height": 1328,
+                                    "width": 1328,
+                                    "resolution_type": "1k"
                                 }
                             },
                             "history_option": {
@@ -325,19 +340,22 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
                         }
                     }
                 }]
-            }),
-            "http_common_info": {
-                "aid": int(DEFAULT_ASSISTANT_ID)
-            }
+            })
         }
         
         # 发送生成请求
         response = requests.post(
-            f"https://jimeng.jianying.com/mweb/v1/aigc_draft/generate",
+            f"https://jimeng.jianying.com{uri}",
             headers=headers,
             params=params,
             json=data
         )
+        
+        logger.debug(f"生成图片请求URL: {response.url}")
+        logger.debug(f"生成图片请求头: {json.dumps(dict(response.request.headers), ensure_ascii=False)}")
+        logger.debug(f"生成图片请求体: {json.dumps(data, ensure_ascii=False)}")
+        logger.debug(f"生成图片响应状态码: {response.status_code}")
+        logger.debug(f"生成图片响应内容: {response.text}")
         
         if response.status_code != 200:
             return {"status": "error", "message": f"生成图片失败: {response.status_code}"}
@@ -346,52 +364,7 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
         if result.get("ret") != "0":
             return {"status": "error", "message": f"生成图片失败: {result.get('errmsg')}"}
             
-        generate_id = result.get("data", {}).get("aigc_data", {}).get("generate_id")
-        if not generate_id:
-            return {"status": "error", "message": "生成图片失败: 未获取到生成ID"}
-            
-        # 轮询查询生成状态
-        max_retries = 30
-        retry_count = 0
-        while retry_count < max_retries:
-            time.sleep(2)  # 等待2秒
-            
-            # 查询生成状态
-            query_headers, query_params = get_common_params(refresh_token, "/mweb/v1/aigc_draft/query")
-            query_params.update({
-                "generate_id": generate_id
-            })
-            
-            query_response = requests.post(
-                f"https://jimeng.jianying.com/mweb/v1/aigc_draft/query",
-                headers=query_headers,
-                params=query_params
-            )
-            
-            if query_response.status_code != 200:
-                retry_count += 1
-                continue
-                
-            query_result = query_response.json()
-            if query_result.get("ret") != "0":
-                retry_count += 1
-                continue
-                
-            status = query_result.get("data", {}).get("aigc_data", {}).get("status")
-            if status == 30:  # 生成完成
-                item_list = query_result.get("data", {}).get("aigc_data", {}).get("item_list", [])
-                if item_list:
-                    return {
-                        "status": "success",
-                        "urls": [item.get("url") for item in item_list if item.get("url")]
-                    }
-                return {"status": "error", "message": "生成图片失败: 未获取到图片URL"}
-            elif status == 40:  # 生成失败
-                return {"status": "error", "message": "生成图片失败"}
-                
-            retry_count += 1
-            
-        return {"status": "error", "message": "生成图片超时"}
+        return {"status": "success", "data": result.get("data", {})}
         
     except Exception as e:
         logger.error(f"生成图片时发生异常: {str(e)}")
