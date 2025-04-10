@@ -49,6 +49,13 @@ MiniMax（海螺 AI）接口转 API [hailuo-free-api](https://github.com/LLM-Red
     - [对话补全](#对话补全)
     - [图像生成](#图像生成)
   - [Star History](#star-history)
+  - [本地启动服务](#本地启动服务)
+    - [环境要求](#环境要求)
+    - [安装依赖](#安装依赖)
+    - [配置说明](#配置说明)
+    - [启动服务](#启动服务)
+    - [测试服务](#测试服务)
+    - [注意事项](#注意事项)
 
 ## 免责声明
 
@@ -81,7 +88,7 @@ MiniMax（海螺 AI）接口转 API [hailuo-free-api](https://github.com/LLM-Red
 ## 效果展示
 
 ```text
-可爱的熊猫漫画，熊猫看到地上有一个叫“即梦”的时间机器，然后说了一句“我借用一下没事吧”
+可爱的熊猫漫画，熊猫看到地上有一个叫"即梦"的时间机器，然后说了一句"我借用一下没事吧"
 ```
 
 ![example1](./doc/example-1.jpeg)
@@ -328,3 +335,63 @@ Authorization: Bearer [sessionid]
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=LLM-Red-Team/doubao-free-api&type=Date)](https://star-history.com/#LLM-Red-Team/doubao-free-api&Date)
+
+## 本地启动服务
+
+### 环境要求
+- Python 3.8+
+- pip 包管理器
+
+### 安装依赖
+```bash
+pip install -r requirements.txt
+```
+
+### 配置说明
+1. 从 [即梦](https://jimeng.jianying.com/) 获取 sessionid
+   - 登录即梦账号
+   - 按 F12 打开开发者工具
+   - 在 Application > Cookies 中找到 `sessionid` 的值
+   - 这将作为 Authorization 的 Bearer Token 值
+
+2. 配置环境变量（可选）
+   创建 `.env` 文件并添加以下内容：
+   ```
+   JIMENG_SESSIONID=your_sessionid_here
+   ```
+
+### 启动服务
+1. 直接运行 Python 文件：
+```bash
+python src/api/controllers/images.py
+```
+
+2. 使用 Flask 运行（推荐）：
+```bash
+python src/api/app.py
+```
+
+服务默认将在 `http://localhost:8000` 启动
+
+### 测试服务
+使用 curl 或 Postman 测试服务：
+
+```bash
+# 生成图像
+curl -X POST http://localhost:8000/v1/images/generations \
+  -H "Authorization: Bearer your_sessionid_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "jimeng-3.0",
+    "prompt": "一只可爱的猫，两眼炯炯有神地看着鸡圈里的鸡",
+    "width": 1024,
+    "height": 1024,
+    "sample_strength": 0.5
+  }'
+```
+
+### 注意事项
+1. 确保网络环境可以访问即梦 API
+2. sessionid 需要定期更新
+3. 建议使用虚拟环境运行服务
+4. 生产环境建议使用 PM2 或 Supervisor 进行进程管理
