@@ -370,6 +370,193 @@ def generate_images(prompt: str, refresh_token: str = None) -> dict:
         logger.error(f"生成图片时发生异常: {str(e)}")
         return {"status": "error", "message": str(e)}
 
+def get_history_by_ids(refresh_token: str, history_record_ids: List[str], max_retries: int = 30, retry_interval: int = 2) -> Dict:
+    """
+    根据history_record_id获取生成图片的结果
+    
+    Args:
+        refresh_token: 刷新令牌
+        history_record_ids: 历史记录ID列表
+        max_retries: 最大重试次数
+        retry_interval: 重试间隔(秒)
+    
+    Returns:
+        Dict: 包含生成图片结果的字典
+    """
+    try:
+        uri = "/mweb/v1/get_history_by_ids"
+        headers, params = get_common_params(refresh_token, uri)
+        
+        # 移除Accept-Encoding头，避免服务器返回压缩响应
+        headers.pop('Accept-Encoding', None)
+        
+        # 根据images.ts中的实现修改请求数据
+        data = {
+            "history_ids": history_record_ids,
+            "image_info": {
+                "width": 2048,
+                "height": 2048,
+                "format": "webp",
+                "image_scene_list": [
+                    {
+                        "scene": "smart_crop",
+                        "width": 360,
+                        "height": 360,
+                        "uniq_key": "smart_crop-w:360-h:360",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "smart_crop",
+                        "width": 480,
+                        "height": 480,
+                        "uniq_key": "smart_crop-w:480-h:480",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "smart_crop",
+                        "width": 720,
+                        "height": 720,
+                        "uniq_key": "smart_crop-w:720-h:720",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "normal",
+                        "width": 2400,
+                        "height": 2400,
+                        "uniq_key": "2400",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "normal",
+                        "width": 1080,
+                        "height": 1080,
+                        "uniq_key": "1080",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "normal",
+                        "width": 720,
+                        "height": 720,
+                        "uniq_key": "720",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "normal",
+                        "width": 480,
+                        "height": 480,
+                        "uniq_key": "480",
+                        "format": "webp",
+                    },
+                    {
+                        "scene": "normal",
+                        "width": 360,
+                        "height": 360,
+                        "uniq_key": "360",
+                        "format": "webp",
+                    }
+                ]
+            },
+            "http_common_info": {
+                "aid": int(DEFAULT_ASSISTANT_ID)
+            }
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    f"https://jimeng.jianying.com{uri}",
+                    headers=headers,
+                    params=params,
+                    json=data
+                )
+                
+                logger.debug(f"获取图片结果请求URL: {response.url}")
+                logger.debug(f"获取图片结果请求头: {json.dumps(dict(response.request.headers), ensure_ascii=False)}")
+                logger.debug(f"获取图片结果请求体: {json.dumps(data, ensure_ascii=False)}")
+                logger.debug(f"获取图片结果响应状态码: {response.status_code}")
+                logger.debug(f"获取图片结果响应内容: {response.text}")
+                
+                if response.status_code != 200:
+                    raise Exception(f"获取图片结果失败: {response.status_code}")
+                    
+                result = response.json()
+                if result.get("ret") != "0":
+                    raise Exception(f"获取图片结果失败: {result.get('errmsg')}")
+                
+                # 根据images.ts的处理逻辑，返回结果格式不同
+                history_id = history_record_ids[0]
+                if not result.get(history_id):
+                    raise Exception("记录不存在")
+                    
+                status = result[history_id].get("status")
+                fail_code = result[history_id].get("fail_code")
+                item_list = result[history_id].get("item_list", [])
+                
+                # 检查图片是否生成完成
+                if status == 30:  # 30表示生成完成
+                    # 将结果格式化为与Python代码兼容的格式
+                    return {
+                        "ret": "0",
+                        "data": {
+                            "aigc_data": {
+                                "status": status,
+                                "fail_code": fail_code,
+                                "item_list": item_list
+                            }
+                        }
+                    }
+                    
+                # 如果未完成，等待后重试
+                if attempt < max_retries - 1:
+                    logger.info(f"图片生成中，等待{retry_interval}秒后重试...")
+                    time.sleep(retry_interval)
+                else:
+                    raise Exception("图片生成超时")
+                    
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                logger.warning(f"获取图片结果失败，重试中... ({str(e)})")
+                time.sleep(retry_interval)
+                
+    except Exception as e:
+        logger.error(f"获取图片结果时发生异常: {str(e)}")
+        raise
+
+def generate_images_with_result(prompt: str, refresh_token: str = None) -> dict:
+    """
+    生成图片并等待获取结果
+    
+    Args:
+        prompt: 提示词
+        refresh_token: 刷新令牌
+    
+    Returns:
+        dict: 包含生成图片结果的字典
+    """
+    try:
+        # 首先调用生成图片接口
+        generate_result = generate_images(prompt, refresh_token)
+        if generate_result.get("status") != "success":
+            return generate_result
+            
+        # 获取history_record_id
+        history_record_id = generate_result.get("data", {}).get("aigc_data", {}).get("history_record_id")
+        if not history_record_id:
+            return {"status": "error", "message": "未获取到history_record_id"}
+            
+        # 直接调用get_history_by_ids方法
+        result = get_history_by_ids(refresh_token, [history_record_id])
+        
+        return {
+            "status": "success",
+            "data": result.get("data", {})
+        }
+        
+    except Exception as e:
+        logger.error(f"生成图片并获取结果时发生异常: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
 def main(
     prompt: str,
     model: str = DEFAULT_MODEL,
@@ -397,7 +584,7 @@ def main(
         Dict[str, Union[List[str], str]]: 包含生成图像URL列表和状态信息的字典
     """
     try:
-        image_urls = generate_images(
+        image_urls = generate_images_with_result(
             prompt=prompt,
             refresh_token=refresh_token,
         )
